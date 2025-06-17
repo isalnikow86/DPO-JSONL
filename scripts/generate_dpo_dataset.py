@@ -6,11 +6,16 @@ import os
 from utils import make_boring_version
 
 
-# Lade Config
+# Konfiguration laden
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
-openai.api_key = config["openai_api_key"]
+# Sicherer Zugriff auf Umgebungsvariable
+openai_api_key = os.getenv("OPENAI_API_KEY") or config.get("openai_api_key")
+if not openai_api_key:
+    raise ValueError("❌ Kein OpenAI API Key gefunden. Setze OPENAI_API_KEY als Umgebungsvariable.")
+
+openai.api_key = openai_api_key
 model = config["model"]
 temperature = config["temperature"]
 max_tokens = config["max_tokens"]

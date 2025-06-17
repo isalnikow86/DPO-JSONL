@@ -1,4 +1,4 @@
-openai_api_key: "sk-..."  # 🔐 Deinen echten Key hier einfügen
-model: "gpt-3.5-turbo"    # Oder gpt-4, falls verfügbar
+'openai_api_key: "sk-123abc456xyz789"
+model: "gpt-4o"
 temperature: 0.7
 max_tokens: 500

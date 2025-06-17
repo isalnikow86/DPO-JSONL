@@ -15,7 +15,7 @@ model = config["model"]
 temperature = config["temperature"]
 max_tokens = config["max_tokens"]
 
-INPUT_FILE = "data/klexikon_articles.jsonl"
+INPUT_FILE = "data/klexikon_texts.jsonl"
 OUTPUT_FILE = "outputs/dpo_dataset.jsonl"
 
 def call_llm(system_prompt, user_prompt):

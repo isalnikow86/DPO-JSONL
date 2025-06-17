@@ -1,7 +1,7 @@
 import os
-from openai import OpenAI
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+import openai
 
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 def make_boring_version(text: str) -> str:
     """
@@ -14,7 +14,7 @@ def make_boring_version(text: str) -> str:
     """
 
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "Du schreibst sachlich und emotionslos."},
@@ -22,7 +22,7 @@ def make_boring_version(text: str) -> str:
             ],
             temperature=0.3
         )
-        return response.choices[0].message.content.strip()
+        return response["choices"][0]["message"]["content"].strip()
 
     except Exception as e:
         print("Fehler bei LLM-Aufruf:", e)
@@ -39,7 +39,7 @@ def make_fun_version(text: str) -> str:
     """
 
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "Du bist ein freundlicher Lernbegleiter für Kinder."},
@@ -47,7 +47,7 @@ def make_fun_version(text: str) -> str:
             ],
             temperature=0.7
         )
-        return response.choices[0].message.content.strip()
+        return response["choices"][0]["message"]["content"].strip()
 
     except Exception as e:
         print("Fehler bei LLM-Aufruf:", e)

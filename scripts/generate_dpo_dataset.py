@@ -10,10 +10,9 @@ from utils import make_boring_version
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
-# Sicherer Zugriff auf Umgebungsvariable
-openai_api_key = os.getenv("OPENAI_API_KEY") or config.get("openai_api_key")
+openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
-    raise ValueError("❌ Kein OpenAI API Key gefunden. Setze OPENAI_API_KEY als Umgebungsvariable.")
+    raise ValueError("❌ OPENAI_API_KEY nicht gesetzt. Bitte exportiere ihn per Terminal.")
 
 openai.api_key = openai_api_key
 model = config["model"]

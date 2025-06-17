@@ -3,7 +3,8 @@ import jsonlines
 from tqdm import tqdm
 import yaml
 import os
-from scripts.utils import make_boring_version
+from utils import make_boring_version
+
 
 # Lade Config
 with open("config.yaml", "r") as f:

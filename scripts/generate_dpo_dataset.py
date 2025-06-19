@@ -13,28 +13,27 @@ if openai.api_key is None:
 INPUT_FILE = "data/klexikon_texts_large.jsonl"
 OUTPUT_DIR = Path("out")
 OUTPUT_DIR.mkdir(exist_ok=True)
-CHUNK_SIZE = 100
+CHUNK_SIZE = 500
 SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4–10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
 
+# === FUNCTIONS ===
 def call_chatgpt(prompt, model="gpt-3.5-turbo", temperature=0.7):
     while True:
         try:
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "Du bist ein freundlicher Lernbegleiter für Kinder zwischen 4 und 10 Jahren."},
+                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=temperature,
-                timeout=600  # 10 Minuten Timeout pro Anfrage
+                timeout=600
             )
             return response['choices'][0]['message']['content'].strip()
-        
         except openai.error.OpenAIError as e:
             print(f"[API-Fehler]: {e}")
         except Exception as e:
             print(f"[Allg. Fehler]: {e}")
-        
         print("⚠️ Warte 30 Sekunden und versuche es erneut...")
         time.sleep(30)
 
@@ -51,8 +50,21 @@ def build_dpo_entry(question, good, bad, prompt_id):
     }
 
 def get_existing_chunks():
-    existing = list(OUTPUT_DIR.glob("dpo_gpt35_chunk_*.jsonl"))
-    return sorted(existing)
+    return sorted(OUTPUT_DIR.glob("dpo_gpt35_chunk_*.jsonl"))
+
+def get_last_processed_title():
+    existing = get_existing_chunks()
+    if not existing:
+        return None
+    last_file = existing[-1]
+    try:
+        with open(last_file, "r", encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+            if lines:
+                return lines[-1]["metadata"]["prompt_id"]
+    except Exception as e:
+        print(f"[Fehler beim Lesen letzter Datei]: {e}")
+    return None
 
 def get_next_chunk_index():
     existing = get_existing_chunks()
@@ -64,11 +76,20 @@ def get_next_chunk_index():
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
     data = [json.loads(line) for line in f if line.strip()]
 
+last_title = get_last_processed_title()
+start_index = 0
+if last_title:
+    for i, item in enumerate(data):
+        if item.get("title") == last_title:
+            start_index = i + 1
+            break
+    print(f"🔁 Letzter Titel im Output: {last_title}")
+print(f"▶️ Starte mit Artikel {start_index + 1}: {data[start_index]['title']}")
+
 chunk_index = get_next_chunk_index()
 dpo_data = []
-processed = (chunk_index - 1) * CHUNK_SIZE
 
-for i, item in enumerate(data[processed:], start=processed):
+for i, item in enumerate(data[start_index:], start=start_index):
     title = item.get("title")
     text = item.get("text")
     if not title or not text:

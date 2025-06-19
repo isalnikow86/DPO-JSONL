@@ -1,89 +1,76 @@
 import json
-import os
+import random
+import time
 import openai
-from tqdm import tqdm
+from pathlib import Path
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# === SETUP ===
+openai.api_key = "sk-..."  # 🔁 Trage hier deinen OpenAI API-Key ein
+INPUT_FILE = "data/klexikon_texts_test.jsonl"
+OUTPUT_FILE = "out/dpo_gpt35_output.jsonl"
 
-SYSTEM_PROMPT = """
-Du bist ein freundlicher Lernbegleiter für Kinder von 4–10 Jahren. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten.
-"""
+SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4-10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
 
-def load_articles(input_path):
-    with open(input_path, "r", encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-def create_prompt(title, text):
-    return f"""
-Thema: {title}
-
-Hier ist ein kurzer Sachtext für Kinder:
-"""
-{text.strip()}
-"""
-
-Erstelle daraus 5 einfache Fragen für Kinder von 4–10 Jahren mit jeweils:
-- einer guten, liebevollen und kindgerechten Antwort
-- einer falschen, sachlich klingenden, aber inhaltlich falschen Antwort
-
-Gib die Ausgabe im JSON-Format mit folgender Struktur:
-[
-  {{"question": "...", "good_answer": "...", "bad_answer": "..."}},
-  ...
-]
-"""
-
-def query_openai_chat(prompt):
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT.strip()},
-            {"role": "user", "content": prompt.strip()}
-        ],
-        temperature=0.7
-    )
-    return response["choices"][0]["message"]["content"]
-
-def build_dpo_entries(title, topic_id, qapairs):
-    entries = []
-    for idx, item in enumerate(qapairs):
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT.strip()},
-            {"role": "user", "content": item["question"]},
-            {"role": "assistant", "content": item["good_answer"]}
-        ]
-        rejected = {"role": "assistant", "content": item["bad_answer"]}
-        entry = {
-            "messages": messages,
-            "rejected_message": rejected,
-            "split": "TRAIN",
-            "metadata": {"topic": title, "prompt_id": f"{topic_id}_{idx}"}
-        }
-        entries.append(entry)
-    return entries
-
-def main():
-    input_path = "data/klexikon_articles.jsonl"
-    output_path = "data/dpo_klexikon_output.jsonl"
-    articles = load_articles(input_path)
-    all_entries = []
-
-    for i, article in enumerate(tqdm(articles)):
-        prompt = create_prompt(article["title"], article["text"])
+# === FUNKTIONEN ===
+def call_chatgpt(prompt_text, retries=3):
+    for attempt in range(retries):
         try:
-            completion = query_openai_chat(prompt)
-            parsed = json.loads(completion)
-            dpo_entries = build_dpo_entries(article["title"], f"article{i:04d}", parsed)
-            all_entries.extend(dpo_entries)
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt_text}
+                ],
+                temperature=0.7
+            )
+            return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"Fehler bei Artikel {article['title']}: {e}")
-            continue
+            print(f"Fehler beim API-Call: {e}. Versuche es erneut...")
+            time.sleep(2)
+    return None
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        for entry in all_entries:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+def create_dpo_entry(user_question, good_answer, bad_answer, topic, split="TRAIN"):
+    return {
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": user_question},
+            {"role": "assistant", "content": good_answer}
+        ],
+        "rejected_message": {"role": "assistant", "content": bad_answer},
+        "split": split,
+        "metadata": {"prompt_id": topic.lower().replace(" ", "_"), "topic": topic}
+    }
 
-    print(f"✅ DPO-Datensatz gespeichert unter: {output_path}")
+# === MAIN ===
 
-if __name__ == "__main__":
-    main()
+data = []
+with open(INPUT_FILE, "r", encoding="utf-8") as f:
+    for line in f:
+        data.append(json.loads(line))
+
+out_path = Path(OUTPUT_FILE)
+out_path.parent.mkdir(exist_ok=True, parents=True)
+
+with open(OUTPUT_FILE, "w", encoding="utf-8") as out_f:
+    for entry in data:
+        topic = entry["title"]
+        context = entry["text"]
+
+        for i in range(5):
+            prompt = f"Lies den folgenden kindgerechten Text:\n\n{context}\n\nErstelle eine einzelne Frage, die ein Kind dazu stellen könnte, sowie eine passende kurze Antwort. Füge auch eine falsche Antwort hinzu, die sich nicht gut eignet. Gib das Ergebnis in folgendem Format aus:\n\nFrage: ...\nGute Antwort: ...\nSchlechte Antwort: ..."
+            response = call_chatgpt(prompt)
+            if not response:
+                continue
+
+            try:
+                parts = response.split("\n")
+                q = [l for l in parts if l.lower().startswith("frage")][0].split(":", 1)[1].strip()
+                good = [l for l in parts if l.lower().startswith("gute")][0].split(":", 1)[1].strip()
+                bad = [l for l in parts if l.lower().startswith("schlechte")][0].split(":", 1)[1].strip()
+                split = random.choice(["TRAIN", "TEST"])
+                dpo = create_dpo_entry(q, good, bad, topic, split)
+                out_f.write(json.dumps(dpo, ensure_ascii=False) + "\n")
+            except Exception as e:
+                print(f"❌ Fehler beim Parsen: {e}\nAntwort war: {response}")
+
+print("✅ DPO-Datensatz fertig unter:", OUTPUT_FILE)

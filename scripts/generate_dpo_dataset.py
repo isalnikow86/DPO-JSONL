@@ -10,7 +10,7 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 if openai.api_key is None:
     raise ValueError("OPENAI_API_KEY not set. Please export it before running the script.")
 
-INPUT_FILE = "data/klexikon_texts_test.jsonl"
+INPUT_FILE = "data/klexikon_texts_large.jsonl"
 OUTPUT_DIR = Path("out")
 OUTPUT_DIR.mkdir(exist_ok=True)
 CHUNK_SIZE = 100

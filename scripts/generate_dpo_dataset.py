@@ -1,64 +1,89 @@
 import json
-from pathlib import Path
-from transformers import pipeline
+import os
+import openai
+from tqdm import tqdm
 
-# 🔧 Modellpipeline vorbereiten
-generator = pipeline("text-generation", model="LeoLM/leo-mistral-hessianai-7b", device_map="auto")
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# 🔧 Pfade definieren
-INPUT_FILE = "data/klexikon_texts_test.jsonl"
-OUTPUT_FILE = "data/klexikon_dpo_dataset.jsonl"
+SYSTEM_PROMPT = """
+Du bist ein freundlicher Lernbegleiter für Kinder von 4–10 Jahren. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten.
+"""
 
-# 🔧 Systemprompt für kindgerechte Assistenz
-SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für Kinder von 4–10 Jahren."
+def load_articles(input_path):
+    with open(input_path, "r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
 
-# 🔧 Funktion zur Generierung von Einträgen im DPO-Format
-def generate_dpo_entries(title, text, num_examples=5):
-    prompt = (
-        f"Lies den folgenden Kindertest über das Thema '{title}'. "
-        f"Erstelle daraus {num_examples} kindgerechte Fragen für 4–10-jährige Kinder. "
-        f"Gib zu jeder Frage eine gute Antwort (kindgerecht, sachlich, freundlich) und eine schlechte Antwort (nicht hilfreich, falsch, übertrieben oder zu technisch). "
-        f"Antworte im JSON-Format als Liste mit Objekten mit den Schlüsseln: question, good_answer, bad_answer.\n"
-        f"\nTEXT:\n{text}\n"
+def create_prompt(title, text):
+    return f"""
+Thema: {title}
+
+Hier ist ein kurzer Sachtext für Kinder:
+"""
+{text.strip()}
+"""
+
+Erstelle daraus 5 einfache Fragen für Kinder von 4–10 Jahren mit jeweils:
+- einer guten, liebevollen und kindgerechten Antwort
+- einer falschen, sachlich klingenden, aber inhaltlich falschen Antwort
+
+Gib die Ausgabe im JSON-Format mit folgender Struktur:
+[
+  {{"question": "...", "good_answer": "...", "bad_answer": "..."}},
+  ...
+]
+"""
+
+def query_openai_chat(prompt):
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT.strip()},
+            {"role": "user", "content": prompt.strip()}
+        ],
+        temperature=0.7
     )
+    return response["choices"][0]["message"]["content"]
 
-    result = generator(prompt, max_new_tokens=1024, do_sample=False)[0]["generated_text"]
+def build_dpo_entries(title, topic_id, qapairs):
+    entries = []
+    for idx, item in enumerate(qapairs):
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT.strip()},
+            {"role": "user", "content": item["question"]},
+            {"role": "assistant", "content": item["good_answer"]}
+        ]
+        rejected = {"role": "assistant", "content": item["bad_answer"]}
+        entry = {
+            "messages": messages,
+            "rejected_message": rejected,
+            "split": "TRAIN",
+            "metadata": {"topic": title, "prompt_id": f"{topic_id}_{idx}"}
+        }
+        entries.append(entry)
+    return entries
 
-    try:
-        json_start = result.index("[")
-        json_data = json.loads(result[json_start:])
-    except Exception as e:
-        print(f"❌ Fehler bei JSON-Parsing für '{title}':", e)
-        return []
+def main():
+    input_path = "data/klexikon_articles.jsonl"
+    output_path = "data/dpo_klexikon_output.jsonl"
+    articles = load_articles(input_path)
+    all_entries = []
 
-    examples = []
-    for idx, item in enumerate(json_data):
+    for i, article in enumerate(tqdm(articles)):
+        prompt = create_prompt(article["title"], article["text"])
         try:
-            entry = {
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": item["question"]},
-                    {"role": "assistant", "content": item["good_answer"]}
-                ],
-                "rejected_message": {"role": "assistant", "content": item["bad_answer"]},
-                "split": "TRAIN",
-                "metadata": {"prompt_id": title.replace(" ", "_"), "index": idx}
-            }
-            examples.append(entry)
+            completion = query_openai_chat(prompt)
+            parsed = json.loads(completion)
+            dpo_entries = build_dpo_entries(article["title"], f"article{i:04d}", parsed)
+            all_entries.extend(dpo_entries)
         except Exception as e:
-            print(f"⚠️ Fehler bei Eintrag {idx} für '{title}':", e)
+            print(f"Fehler bei Artikel {article['title']}: {e}")
+            continue
 
-    return examples
+    with open(output_path, "w", encoding="utf-8") as f:
+        for entry in all_entries:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-# 🔄 Verarbeitung starten
-with open(INPUT_FILE, "r", encoding="utf-8") as infile, open(OUTPUT_FILE, "w", encoding="utf-8") as outfile:
-    for line in infile:
-        article = json.loads(line)
-        title = article.get("title", "Thema")
-        text = article.get("text", "")
-        print(f"🔍 Generiere Fragen für: {title}")
-        entries = generate_dpo_entries(title, text)
-        for entry in entries:
-            outfile.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    print(f"✅ DPO-Datensatz gespeichert unter: {output_path}")
 
-print(f"✅ Fertig. Datei gespeichert unter: {OUTPUT_FILE}")
+if __name__ == "__main__":
+    main()

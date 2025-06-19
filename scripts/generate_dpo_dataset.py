@@ -1,39 +1,32 @@
-import json
-import random
-import time
-import openai
 import os
-from pathlib import Path
-
-# === SETUP ===
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-if openai.api_key is None:
-    raise ValueError("OPENAI_API_KEY not set. Please export it before running the script.")
+import json
+import openai
+from time import sleep
 
 INPUT_FILE = "data/klexikon_texts_large.jsonl"
 OUTPUT_FILE = "out/dpo_gpt35_output.jsonl"
+CHUNK_PREFIX = "out/dpo_gpt35_chunk_"
+CHUNK_SIZE = 100
 
-SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4–10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# === FUNKTIONEN ===
-def call_chatgpt(prompt_text, retries=3):
-    for attempt in range(retries):
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt_text}
-                ],
-                temperature=0.7,
-                max_tokens=700
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print("Fehler bei LLM-Aufruf:", e)
-            time.sleep(2)
-    return ""
+system_prompt = "Du bist ein freundlicher Lernbegleiter für Kinder zwischen 4 und 10 Jahren. Du erklärst Dinge liebevoll, einfach und mit kindgerechten Worten."
+
+def call_chatgpt(prompt: str) -> str:
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            temperature=0.7,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[Fehler bei API-Aufruf]: {e}")
+        sleep(5)
+        return None
 
 def build_dpo_entry(question, good, bad, prompt_id):
     return {
@@ -47,21 +40,20 @@ def build_dpo_entry(question, good, bad, prompt_id):
         "metadata": {"prompt_id": prompt_id}
     }
 
-
-# === START ===
+# Hauptlogik
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
     data = [json.loads(line) for line in f if line.strip()]
 
-Path("out").mkdir(parents=True, exist_ok=True)
 dpo_data = []
+all_data = []
+chunk_counter = 0
 
-for item in data:
+for idx, item in enumerate(data):
     title = item.get("title")
     text = item.get("text")
     if not title or not text:
         continue
 
-    # Frage-Generierungs-Prompt korrekt mit mehrzeiligem f-String
     prompt_text = f"""Erstelle 5 kindgerechte Quizfragen (nur Fragen!) zu folgendem Thema für 4–10-Jährige:
 
 Titel: {title}
@@ -73,9 +65,9 @@ Text: {text}
     if not frage_block:
         continue
 
-    fragen = [line.strip("- ").strip() for line in frage_block.split("\n") if line.strip() and "?" in line]
+    fragen = [line.strip("- ").strip() for line in frage_block.split("\n") if "?" in line]
 
-    for idx, frage in enumerate(fragen[:5]):
+    for frage in fragen[:5]:
         good_prompt = f"""Beantworte diese Frage kindgerecht, liebevoll und mit Wissen aus folgendem Text:
 
 Frage: {frage}
@@ -91,12 +83,32 @@ Text: {text}
         bad_answer = call_chatgpt(bad_prompt)
 
         if good_answer and bad_answer and len(good_answer) > 5 and len(bad_answer) > 2:
-            dpo_data.append(build_dpo_entry(frage, good_answer.strip(), bad_answer.strip(), prompt_id=title))
+            entry = build_dpo_entry(frage, good_answer, bad_answer, prompt_id=title)
+            dpo_data.append(entry)
+            all_data.append(entry)
 
+    # Chunk-Datei schreiben
+    if (idx + 1) % CHUNK_SIZE == 0:
+        chunk_counter += 1
+        chunk_path = f"{CHUNK_PREFIX}{chunk_counter:03d}.jsonl"
+        with open(chunk_path, "w", encoding="utf-8") as f_chunk:
+            for entry in dpo_data:
+                f_chunk.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        print(f"[✓] Zwischenspeicherung: {chunk_path} mit {len(dpo_data)} Einträgen")
+        dpo_data = []
 
-# === SPEICHERN ===
-with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-    for entry in dpo_data:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+# Letzten Chunk speichern, falls < CHUNK_SIZE offen
+if dpo_data:
+    chunk_counter += 1
+    chunk_path = f"{CHUNK_PREFIX}{chunk_counter:03d}.jsonl"
+    with open(chunk_path, "w", encoding="utf-8") as f_chunk:
+        for entry in dpo_data:
+            f_chunk.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    print(f"[✓] Letzter Zwischenspeicher: {chunk_path}")
 
-print(f"✅ Fertig! {len(dpo_data)} DPO-Beispiele gespeichert in: {OUTPUT_FILE}")
+# Gesamtausgabe
+with open(OUTPUT_FILE, "w", encoding="utf-8") as f_out:
+    for entry in all_data:
+        f_out.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+print(f"[✅] Gesamtausgabe gespeichert: {OUTPUT_FILE} mit {len(all_data)} Einträgen.")

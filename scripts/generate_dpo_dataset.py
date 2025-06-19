@@ -2,19 +2,19 @@ import json
 import random
 import time
 import openai
+import os
 from pathlib import Path
 
 # === SETUP ===
-import os
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 if openai.api_key is None:
     raise ValueError("OPENAI_API_KEY not set. Please export it before running the script.")
 
-input_path = "data/klexikon_texts_test.jsonl"
+INPUT_FILE = "data/klexikon_texts_test.jsonl"
 OUTPUT_FILE = "out/dpo_gpt35_output.jsonl"
 
-SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4-10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
+SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4–10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
 
 # === FUNKTIONEN ===
 def call_chatgpt(prompt_text, retries=3):
@@ -26,56 +26,67 @@ def call_chatgpt(prompt_text, retries=3):
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt_text}
                 ],
-                temperature=0.7
+                temperature=0.7,
+                max_tokens=700
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"Fehler beim API-Call: {e}. Versuche es erneut...")
+            print("Fehler bei LLM-Aufruf:", e)
             time.sleep(2)
-    return None
+    return ""
 
-def create_dpo_entry(user_question, good_answer, bad_answer, topic, split="TRAIN"):
+def build_dpo_entry(prompt, good, bad, prompt_id):
     return {
         "messages": [
             {"role": "system", "content": "You are a helpful assistant"},
-            {"role": "user", "content": user_question},
-            {"role": "assistant", "content": good_answer}
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": good}
         ],
-        "rejected_message": {"role": "assistant", "content": bad_answer},
-        "split": split,
-        "metadata": {"prompt_id": topic.lower().replace(" ", "_"), "topic": topic}
+        "rejected_message": {"role": "assistant", "content": bad},
+        "split": "TRAIN",
+        "metadata": {"prompt_id": prompt_id}
     }
 
-# === MAIN ===
-
-data = []
+# === START ===
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
-    for line in f:
-        data.append(json.loads(line))
+    data = [json.loads(line) for line in f if line.strip()]
 
-out_path = Path(OUTPUT_FILE)
-out_path.parent.mkdir(exist_ok=True, parents=True)
+Path("out").mkdir(parents=True, exist_ok=True)
+dpo_data = []
 
-with open(OUTPUT_FILE, "w", encoding="utf-8") as out_f:
-    for entry in data:
-        topic = entry["title"]
-        context = entry["text"]
+for item in data:
+    title = item.get("title")
+    text = item.get("text")
+    if not title or not text:
+        continue
 
-        for i in range(5):
-            prompt = f"Lies den folgenden kindgerechten Text:\n\n{context}\n\nErstelle eine einzelne Frage, die ein Kind dazu stellen könnte, sowie eine passende kurze Antwort. Füge auch eine falsche Antwort hinzu, die sich nicht gut eignet. Gib das Ergebnis in folgendem Format aus:\n\nFrage: ...\nGute Antwort: ...\nSchlechte Antwort: ..."
-            response = call_chatgpt(prompt)
-            if not response:
-                continue
+    prompt_text = f"Erstelle 5 kindgerechte Quizfragen (nur Fragen!) zu folgendem Thema für 4–10-Jährige:
 
-            try:
-                parts = response.split("\n")
-                q = [l for l in parts if l.lower().startswith("frage")][0].split(":", 1)[1].strip()
-                good = [l for l in parts if l.lower().startswith("gute")][0].split(":", 1)[1].strip()
-                bad = [l for l in parts if l.lower().startswith("schlechte")][0].split(":", 1)[1].strip()
-                split = random.choice(["TRAIN", "TEST"])
-                dpo = create_dpo_entry(q, good, bad, topic, split)
-                out_f.write(json.dumps(dpo, ensure_ascii=False) + "\n")
-            except Exception as e:
-                print(f"❌ Fehler beim Parsen: {e}\nAntwort war: {response}")
+Titel: {title}
 
-print("✅ DPO-Datensatz fertig unter:", OUTPUT_FILE)
+Text: {text}"
+
+    frage_block = call_chatgpt(prompt_text)
+    fragen = [line.strip("- ") for line in frage_block.split("\n") if line.strip() and "?" in line]
+
+    for idx, frage in enumerate(fragen[:5]):
+        good_prompt = f"Beantworte diese Frage kindgerecht, liebevoll und mit Wissen aus folgendem Text:
+
+Frage: {frage}
+
+Text: {text}"
+        bad_prompt = f"Gib eine sehr kurze, falsche, sachlich klingende Antwort auf diese Frage:
+{frage}"
+
+        good_answer = call_chatgpt(good_prompt)
+        bad_answer = call_chatgpt(bad_prompt)
+
+        if good_answer and bad_answer:
+            dpo_data.append(build_dpo_entry(frage, good_answer, bad_answer, prompt_id=title))
+
+# === SPEICHERN ===
+with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    for entry in dpo_data:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+print(f"✅ Fertig! {len(dpo_data)} DPO-Beispiele gespeichert in: {OUTPUT_FILE}")

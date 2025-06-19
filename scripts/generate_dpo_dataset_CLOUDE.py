@@ -26,7 +26,12 @@ def call_claude(prompt, temperature=0.7):
                     {"role": "user", "content": prompt}
                 ]
             )
-            return response.content.strip()
+            if isinstance(response.content, list):
+                # Extrahiere Text aus Claude-Antwort
+                joined = "".join([part.text for part in response.content if hasattr(part, "text")])
+                return joined.strip()
+            else:
+                return str(response.content).strip()
         except Exception as e:
             print(f"[API-Fehler]: {e}\n_ Warte 30 Sekunden und versuche es erneut...")
             time.sleep(30)

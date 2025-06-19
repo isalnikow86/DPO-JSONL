@@ -1,76 +1,73 @@
-import os
 import json
-import openai
+import random
 import time
-import glob
+import os
+import openai
+from pathlib import Path
 
+# === SETUP ===
 openai.api_key = os.getenv("OPENAI_API_KEY")
+if openai.api_key is None:
+    raise ValueError("OPENAI_API_KEY not set. Please export it before running the script.")
 
-INPUT_FILE = "data/klexikon.jsonl"
-OUTPUT_DIR = "out"
-PARTIAL_PREFIX = "output_partial_"
-FINAL_FILE = "output_all.jsonl"
+INPUT_FILE = "data/klexikon_texts_test.jsonl"
+OUTPUT_DIR = Path("out")
+OUTPUT_DIR.mkdir(exist_ok=True)
+CHUNK_SIZE = 100
+SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4–10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# === FUNKTIONEN ===
+def call_chatgpt(prompt_text, retries=3):
+    for attempt in range(retries):
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt_text},
+                ],
+                temperature=0.7
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print("[Fehler bei API-Aufruf]:", e)
+            time.sleep(5)
+    return ""
 
-# Vorherige Ergebnisse einlesen
-existing_titles = set()
-for partial_file in glob.glob(os.path.join(OUTPUT_DIR, f"{PARTIAL_PREFIX}*.jsonl")):
-    with open(partial_file, "r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                entry = json.loads(line)
-                prompt_id = entry.get("metadata", {}).get("prompt_id")
-                if prompt_id:
-                    existing_titles.add(prompt_id)
-            except json.JSONDecodeError:
-                continue
-
-# Hilfsfunktionen
-def call_chatgpt(prompt, temperature=0.7):
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            temperature=temperature,
-            messages=[
-                {"role": "system", "content": "Du bist ein freundlicher Lernbegleiter für Kinder zwischen 4 und 10 Jahren."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Fehler bei ChatGPT-Call: {e}")
-        time.sleep(5)
-        return None
-
-def build_dpo_entry(question, good, bad, prompt_id, split="TRAIN"):
+def build_dpo_entry(question, good, bad, prompt_id):
     return {
         "messages": [
-            {"role": "system", "content": "Du bist ein freundlicher Lernbegleiter für Kinder zwischen 4 und 10 Jahren."},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": question},
             {"role": "assistant", "content": good}
         ],
         "rejected_message": {"role": "assistant", "content": bad},
-        "split": split,
-        "metadata": {
-            "prompt_id": prompt_id
-        }
+        "split": "TRAIN",
+        "metadata": {"prompt_id": prompt_id}
     }
 
-# Input-Daten laden
+def get_existing_chunks():
+    existing = list(OUTPUT_DIR.glob("dpo_gpt35_chunk_*.jsonl"))
+    return sorted(existing)
+
+def get_next_chunk_index():
+    existing = get_existing_chunks()
+    if not existing:
+        return 1
+    return max([int(f.stem.split("_")[-1]) for f in existing]) + 1
+
+# === MAIN ===
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
-    data = [json.loads(line) for line in f]
+    data = [json.loads(line) for line in f if line.strip()]
 
-# Verarbeitung starten
+chunk_index = get_next_chunk_index()
 dpo_data = []
-batch_size = 100
-batch_index = 0
-processed_count = 0
+processed = (chunk_index - 1) * CHUNK_SIZE
 
-for item in data:
+for i, item in enumerate(data[processed:], start=processed):
     title = item.get("title")
     text = item.get("text")
-    if not title or not text or title in existing_titles:
+    if not title or not text:
         continue
 
     prompt_text = f"""Erstelle 5 kindgerechte Quizfragen (nur Fragen!) zu folgendem Thema für 4–10-Jährige:
@@ -80,52 +77,32 @@ Titel: {title}
 Text: {text}"""
 
     frage_block = call_chatgpt(prompt_text)
-    if not frage_block:
-        continue
-
-    fragen = [line.strip("- ").strip() for line in frage_block.split("\n") if "?" in line and len(line.strip()) > 3]
+    fragen = [line.strip("- ") for line in frage_block.split("\n") if line.strip() and "?" in line]
 
     for frage in fragen[:5]:
-        good_prompt = f"""Beantworte diese Frage kindgerecht, liebevoll und mit Wissen aus folgendem Text:
-
-Frage: {frage}
-
-Text: {text}"""
+        good_prompt = f"Beantworte diese Frage kindgerecht, liebevoll und mit Wissen aus folgendem Text:\n\nFrage: {frage}\n\nText: {text}"
         bad_prompt = f"Gib eine sehr kurze, falsche, sachlich klingende Antwort auf diese Frage:\n{frage}"
 
         good_answer = call_chatgpt(good_prompt)
         bad_answer = call_chatgpt(bad_prompt)
 
         if good_answer and bad_answer:
-            dpo_data.append(build_dpo_entry(frage, good_answer, bad_answer, prompt_id=title))
-            processed_count += 1
+            entry = build_dpo_entry(frage, good_answer, bad_answer, prompt_id=title)
+            dpo_data.append(entry)
 
-    # Zwischenspeichern alle batch_size Artikel
-    if processed_count >= batch_size:
-        out_path = os.path.join(OUTPUT_DIR, f"{PARTIAL_PREFIX}{batch_index}.jsonl")
-        with open(out_path, "w", encoding="utf-8") as f:
+    if len(dpo_data) >= CHUNK_SIZE:
+        output_file = OUTPUT_DIR / f"dpo_gpt35_chunk_{chunk_index:03}.jsonl"
+        with open(output_file, "w", encoding="utf-8") as f:
             for entry in dpo_data:
-                json.dump(entry, f, ensure_ascii=False)
-                f.write("\n")
-        print(f"✅ Gespeichert: {out_path} mit {len(dpo_data)} Einträgen")
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        print(f"✅ Zwischenspeicherung: {output_file} mit {len(dpo_data)} Einträgen")
+        chunk_index += 1
         dpo_data = []
-        processed_count = 0
-        batch_index += 1
 
-# Am Ende alle restlichen schreiben
+# Restdaten speichern
 if dpo_data:
-    out_path = os.path.join(OUTPUT_DIR, f"{PARTIAL_PREFIX}{batch_index}.jsonl")
-    with open(out_path, "w", encoding="utf-8") as f:
+    output_file = OUTPUT_DIR / f"dpo_gpt35_chunk_{chunk_index:03}.jsonl"
+    with open(output_file, "w", encoding="utf-8") as f:
         for entry in dpo_data:
-            json.dump(entry, f, ensure_ascii=False)
-            f.write("\n")
-    print(f"✅ Letzte Teildatei geschrieben: {out_path}")
-
-# Optional: Alles in eine große Datei zusammenführen
-final_path = os.path.join(OUTPUT_DIR, FINAL_FILE)
-with open(final_path, "w", encoding="utf-8") as f_out:
-    for partial_file in sorted(glob.glob(os.path.join(OUTPUT_DIR, f"{PARTIAL_PREFIX}*.jsonl"))):
-        with open(partial_file, "r", encoding="utf-8") as f_in:
-            for line in f_in:
-                f_out.write(line)
-print(f"✅ Gesamtdatei geschrieben: {final_path}")
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    print(f"✅ Finale Speicherung: {output_file} mit {len(dpo_data)} Einträgen")

@@ -1,47 +1,38 @@
 import json
-import random
 import time
 import os
-import requests
+import anthropic
 from pathlib import Path
 
 # === SETUP ===
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-if not ANTHROPIC_API_KEY:
-    raise ValueError("ANTHROPIC_API_KEY not set. Please export it before running the script.")
+if ANTHROPIC_API_KEY is None:
+    raise ValueError("ANTHROPIC_API_KEY not set. Bitte exportiere ihn vorher.")
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 INPUT_FILE = "data/klexikon_texts_large.jsonl"
 OUTPUT_DIR = Path("out")
 OUTPUT_DIR.mkdir(exist_ok=True)
-CHUNK_SIZE = 100
+CHUNK_SIZE = 500
 SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4–10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
 
-HEADERS = {
-    "x-api-key": ANTHROPIC_API_KEY,
-    "anthropic-version": "2023-06-01",
-    "content-type": "application/json"
-}
-
-CLAUDE_MODEL = "claude-3-sonnet-20240229"
-
-API_URL = "https://api.anthropic.com/v1/messages"
-
-def call_claude(prompt):
+# === FUNKTIONEN ===
+def call_claude(prompt, model="claude-3-sonnet-20240229", temperature=0.7):
     while True:
         try:
-            response = requests.post(API_URL, headers=HEADERS, json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 1024,
-                "temperature": 0.7,
-                "system": SYSTEM_PROMPT,
-                "messages": [{"role": "user", "content": prompt}]
-            })
-            response.raise_for_status()
-            return response.json()["content"][0]["text"].strip()
-        
-        except requests.exceptions.RequestException as e:
-            print(f"[API-Fehler]: {e}")
-            print("⚠️ Warte 30 Sekunden und versuche es erneut...")
+            response = client.messages.create(
+                model=model,
+                temperature=temperature,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            return response.content[0].text.strip()
+        except Exception as e:
+            print(f"[API-Fehler]: {e}\n_ Warte 30 Sekunden und versuche es erneut...")
             time.sleep(30)
 
 def build_dpo_entry(question, good, bad, prompt_id):
@@ -56,26 +47,51 @@ def build_dpo_entry(question, good, bad, prompt_id):
         "metadata": {"prompt_id": prompt_id}
     }
 
-def get_existing_chunks():
-    existing = list(OUTPUT_DIR.glob("dpo_gpt35_chunk_*.jsonl"))
-    return sorted(existing)
+def get_last_title_from_output():
+    existing_chunks = sorted(OUTPUT_DIR.glob("dpo_gpt35_chunk_*.jsonl"))
+    if not existing_chunks:
+        return None
+
+    last_file = existing_chunks[-1]
+    with open(last_file, "r", encoding="utf-8") as f:
+        last_title = None
+        for line in f:
+            try:
+                entry = json.loads(line)
+                last_title = entry.get("metadata", {}).get("prompt_id")
+            except Exception:
+                continue
+    return last_title
 
 def get_next_chunk_index():
-    existing = get_existing_chunks()
+    existing = list(OUTPUT_DIR.glob("dpo_gpt35_chunk_*.jsonl"))
     if not existing:
         return 1
     return max([int(f.stem.split("_")[-1]) for f in existing]) + 1
 
-# === MAIN ===
+# === DATEN LADEN ===
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
     data = [json.loads(line) for line in f if line.strip()]
 
+last_title = get_last_title_from_output()
+
+if last_title:
+    print(f"⏩ Letzter verarbeiteter Titel: {last_title}")
+    start_index = 0
+    for i, item in enumerate(data):
+        if item.get("title") == last_title:
+            start_index = i
+            break
+    data = data[start_index:]  # Artikel evtl. doppelt, aber sicher
+    print(f"🟢 Weiter bei Artikel: {data[0].get('title')} (Index: {start_index})")
+else:
+    print("🚀 Starte von Anfang.")
+
 chunk_index = get_next_chunk_index()
 dpo_data = []
-processed = (chunk_index - 1) * CHUNK_SIZE
-print(f"🧠 Starte bei Artikel {processed+1} von {len(data)}... (Datei {chunk_index:03})")
 
-for i, item in enumerate(data[processed:], start=processed):
+# === VERARBEITUNG ===
+for item in data:
     title = item.get("title")
     text = item.get("text")
     if not title or not text:
@@ -110,7 +126,7 @@ Text: {text}"""
         chunk_index += 1
         dpo_data = []
 
-# Restdaten speichern
+# Rest speichern
 if dpo_data:
     output_file = OUTPUT_DIR / f"dpo_gpt35_chunk_{chunk_index:03}.jsonl"
     with open(output_file, "w", encoding="utf-8") as f:

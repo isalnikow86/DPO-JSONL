@@ -1,70 +1,64 @@
-import openai
-import jsonlines
-from tqdm import tqdm
-import yaml
-import os
-from scripts.utils import make_boring_version
+import json
+from pathlib import Path
+from transformers import pipeline
 
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+# 🔧 Modellpipeline vorbereiten
+generator = pipeline("text-generation", model="LeoLM/leo-mistral-hessianai-7b", device_map="auto")
 
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    raise ValueError("❌ OPENAI_API_KEY nicht gesetzt. Bitte exportiere ihn per Terminal.")
+# 🔧 Pfade definieren
+INPUT_FILE = "data/klexikon_texts_test.jsonl"
+OUTPUT_FILE = "data/klexikon_dpo_dataset.jsonl"
 
-openai.api_key = openai_api_key
-model = config["model"]
-temperature = config["temperature"]
-max_tokens = config["max_tokens"]
+# 🔧 Systemprompt für kindgerechte Assistenz
+SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für Kinder von 4–10 Jahren."
 
+# 🔧 Funktion zur Generierung von Einträgen im DPO-Format
+def generate_dpo_entries(title, text, num_examples=5):
+    prompt = (
+        f"Lies den folgenden Kindertest über das Thema '{title}'. "
+        f"Erstelle daraus {num_examples} kindgerechte Fragen für 4–10-jährige Kinder. "
+        f"Gib zu jeder Frage eine gute Antwort (kindgerecht, sachlich, freundlich) und eine schlechte Antwort (nicht hilfreich, falsch, übertrieben oder zu technisch). "
+        f"Antworte im JSON-Format als Liste mit Objekten mit den Schlüsseln: question, good_answer, bad_answer.\n"
+        f"\nTEXT:\n{text}\n"
+    )
 
-INPUT_FILE = "data/klexikon_texts_large.jsonl"
-OUTPUT_FILE = "outputs/dpo_dataset.jsonl"
+    result = generator(prompt, max_new_tokens=1024, do_sample=False)[0]["generated_text"]
 
-def call_llm(system_prompt, user_prompt):
     try:
-        res = openai.ChatCompletion.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        return res['choices'][0]['message']['content'].strip()
+        json_start = result.index("[")
+        json_data = json.loads(result[json_start:])
     except Exception as e:
-        print(f"Fehler bei LLM-Aufruf: {e}")
-        return None
+        print(f"❌ Fehler bei JSON-Parsing für '{title}':", e)
+        return []
 
-system_prompt = "Du bist ein kinderfreundlicher Erklär-Bot für 6–10-Jährige. Antworte einfach, verspielt, liebevoll und korrekt."
-
-with jsonlines.open(INPUT_FILE) as reader, jsonlines.open(OUTPUT_FILE, mode='w') as writer:
-    for row in tqdm(reader, desc="Generiere DPO-Beispiele"):
-        title = row.get("title", "").strip()
-        text = row.get("text", "").strip()
-        if not title or not text:
-            continue
-
-        question = f"Was weißt du über {title}?"
-        good_answer = call_llm(system_prompt, question + "\n\nHier ist ein Lexikontext dazu:\n" + text)
-        if not good_answer:
-            continue
-        bad_answer = make_boring_version(good_answer)
-
-        entry = {
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant"},
-                {"role": "user", "content": question},
-                {"role": "assistant", "content": good_answer}
-            ],
-            "rejected_message": {
-                "role": "assistant",
-                "content": bad_answer
-            },
-            "split": "TRAIN",
-            "metadata": {
-                "prompt_id": title.lower().replace(" ", "_")
+    examples = []
+    for idx, item in enumerate(json_data):
+        try:
+            entry = {
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": item["question"]},
+                    {"role": "assistant", "content": item["good_answer"]}
+                ],
+                "rejected_message": {"role": "assistant", "content": item["bad_answer"]},
+                "split": "TRAIN",
+                "metadata": {"prompt_id": title.replace(" ", "_"), "index": idx}
             }
-        }
-        writer.write(entry)
+            examples.append(entry)
+        except Exception as e:
+            print(f"⚠️ Fehler bei Eintrag {idx} für '{title}':", e)
+
+    return examples
+
+# 🔄 Verarbeitung starten
+with open(INPUT_FILE, "r", encoding="utf-8") as infile, open(OUTPUT_FILE, "w", encoding="utf-8") as outfile:
+    for line in infile:
+        article = json.loads(line)
+        title = article.get("title", "Thema")
+        text = article.get("text", "")
+        print(f"🔍 Generiere Fragen für: {title}")
+        entries = generate_dpo_entries(title, text)
+        for entry in entries:
+            outfile.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+print(f"✅ Fertig. Datei gespeichert unter: {OUTPUT_FILE}")

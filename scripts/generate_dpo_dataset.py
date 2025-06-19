@@ -60,29 +60,38 @@ for item in data:
     if not title or not text:
         continue
 
-    prompt_text = f"Erstelle 5 kindgerechte Quizfragen (nur Fragen!) zu folgendem Thema für 4–10-Jährige:
+    # Frage-Generierungs-Prompt korrekt mit mehrzeiligem f-String
+    prompt_text = f"""Erstelle 5 kindgerechte Quizfragen (nur Fragen!) zu folgendem Thema für 4–10-Jährige:
 
 Titel: {title}
 
-Text: {text}"
+Text: {text}
+"""
 
     frage_block = call_chatgpt(prompt_text)
-    fragen = [line.strip("- ") for line in frage_block.split("\n") if line.strip() and "?" in line]
+    if not frage_block:
+        continue
+
+    fragen = [line.strip("- ").strip() for line in frage_block.split("\n") if line.strip() and "?" in line]
 
     for idx, frage in enumerate(fragen[:5]):
-        good_prompt = f"Beantworte diese Frage kindgerecht, liebevoll und mit Wissen aus folgendem Text:
+        good_prompt = f"""Beantworte diese Frage kindgerecht, liebevoll und mit Wissen aus folgendem Text:
 
 Frage: {frage}
 
-Text: {text}"
-        bad_prompt = f"Gib eine sehr kurze, falsche, sachlich klingende Antwort auf diese Frage:
-{frage}"
+Text: {text}
+"""
+        bad_prompt = f"""Gib eine sehr kurze, falsche, sachlich klingende Antwort auf diese Frage:
+
+{frage}
+"""
 
         good_answer = call_chatgpt(good_prompt)
         bad_answer = call_chatgpt(bad_prompt)
 
-        if good_answer and bad_answer:
-            dpo_data.append(build_dpo_entry(frage, good_answer, bad_answer, prompt_id=title))
+        if good_answer and bad_answer and len(good_answer) > 5 and len(bad_answer) > 2:
+            dpo_data.append(build_dpo_entry(frage, good_answer.strip(), bad_answer.strip(), prompt_id=title))
+
 
 # === SPEICHERN ===
 with open(OUTPUT_FILE, "w", encoding="utf-8") as f:

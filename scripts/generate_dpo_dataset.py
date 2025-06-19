@@ -35,17 +35,18 @@ def call_chatgpt(prompt_text, retries=3):
             time.sleep(2)
     return ""
 
-def build_dpo_entry(prompt, good, bad, prompt_id):
+def build_dpo_entry(question, good, bad, prompt_id):
     return {
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant"},
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": "Du bist ein freundlicher Lernbegleiter für Kinder zwischen 4 und 10 Jahren. Du erklärst Dinge liebevoll, einfach und verständlich."},
+            {"role": "user", "content": question},
             {"role": "assistant", "content": good}
         ],
         "rejected_message": {"role": "assistant", "content": bad},
         "split": "TRAIN",
         "metadata": {"prompt_id": prompt_id}
     }
+
 
 # === START ===
 with open(INPUT_FILE, "r", encoding="utf-8") as f:

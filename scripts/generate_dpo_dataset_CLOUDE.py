@@ -18,7 +18,7 @@ CHUNK_SIZE = 500
 SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4–10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
 
 # === FUNKTIONEN ===
-def call_claude(prompt, model="claude-3-sonnet", temperature=0.7):
+def call_claude(prompt, model = "claude-sonnet-4-20250514", temperature=0.7):
     while True:
         try:
             response = client.messages.create(

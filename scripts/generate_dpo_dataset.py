@@ -5,7 +5,12 @@ import openai
 from pathlib import Path
 
 # === SETUP ===
-openai.api_key = "sk-..."  # 🔁 Trage hier deinen OpenAI API-Key ein
+import os
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+if openai.api_key is None:
+    raise ValueError("OPENAI_API_KEY not set. Please export it before running the script.")
+
 INPUT_FILE = "data/klexikon_texts_test.jsonl"
 OUTPUT_FILE = "out/dpo_gpt35_output.jsonl"
 

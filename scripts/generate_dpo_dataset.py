@@ -16,23 +16,27 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 CHUNK_SIZE = 100
 SYSTEM_PROMPT = "Du bist ein freundlicher Lernbegleiter für 4–10-jährige Kinder. Du erklärst Dinge in einfachen, sicheren und liebevollen Worten."
 
-# === FUNKTIONEN ===
-def call_chatgpt(prompt_text, retries=3):
-    for attempt in range(retries):
+def call_chatgpt(prompt, model="gpt-3.5-turbo", temperature=0.7):
+    while True:
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
+                model=model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt_text},
+                    {"role": "system", "content": "Du bist ein freundlicher Lernbegleiter für Kinder zwischen 4 und 10 Jahren."},
+                    {"role": "user", "content": prompt}
                 ],
-                temperature=0.7
+                temperature=temperature,
+                timeout=600  # 10 Minuten Timeout pro Anfrage
             )
-            return response.choices[0].message.content.strip()
+            return response['choices'][0]['message']['content'].strip()
+        
+        except openai.error.OpenAIError as e:
+            print(f"[API-Fehler]: {e}")
         except Exception as e:
-            print("[Fehler bei API-Aufruf]:", e)
-            time.sleep(5)
-    return ""
+            print(f"[Allg. Fehler]: {e}")
+        
+        print("⚠️ Warte 30 Sekunden und versuche es erneut...")
+        time.sleep(30)
 
 def build_dpo_entry(question, good, bad, prompt_id):
     return {

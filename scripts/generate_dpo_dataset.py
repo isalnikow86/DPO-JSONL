@@ -29,7 +29,9 @@ def call_chatgpt(prompt, model="gpt-3.5-turbo", temperature=0.7):
                 temperature=temperature,
                 timeout=600
             )
-            return response['choices'][0]['message']['content'].strip()
+            answer = response['choices'][0]['message']['content'].strip()
+            print(f"\t🤖 Antwort erhalten ({len(answer)} Zeichen)")
+            return answer
         except openai.error.OpenAIError as e:
             print(f"[API-Fehler]: {e}")
         except Exception as e:
@@ -76,6 +78,9 @@ def get_next_chunk_index():
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
     data = [json.loads(line) for line in f if line.strip()]
 
+print(f"📁 Anzahl Artikel im Input: {len(data)}")
+print(f"📦 Vorhandene Output-Dateien: {len(get_existing_chunks())}")
+
 last_title = get_last_processed_title()
 start_index = 0
 if last_title:
@@ -94,6 +99,8 @@ for i, item in enumerate(data[start_index:], start=start_index):
     text = item.get("text")
     if not title or not text:
         continue
+
+    print(f"\n📘 Bearbeite Artikel {i + 1}/{len(data)}: {title}")
 
     prompt_text = f"""Erstelle 5 kindgerechte Quizfragen (nur Fragen!) zu folgendem Thema für 4–10-Jährige:
 
@@ -120,7 +127,7 @@ Text: {text}"""
         with open(output_file, "w", encoding="utf-8") as f:
             for entry in dpo_data:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        print(f"✅ Zwischenspeicherung: {output_file} mit {len(dpo_data)} Einträgen")
+        print(f"💾 Zwischenspeicherung: {output_file} mit {len(dpo_data)} Einträgen")
         chunk_index += 1
         dpo_data = []
 
